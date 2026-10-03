@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Security Gateway - Demonstration</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0d10; color: #d7dae0; font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font: 600 18px/1.3 system-ui, sans-serif; margin: 0 0 4px; color: #fff; }
+  .sub { font: 13px/1.5 system-ui, sans-serif; color: #8b949e; margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  button { background: #161b22; color: #d7dae0; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #1f2630; }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover { background: #2ea043; }
+  .term { background: #0e1013; border: 1px solid #21262d; border-radius: 10px; padding: 14px 16px; min-height: 360px; }
+  #out div { white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  .prompt { color: #7ee787; }
+  input { flex: 1; background: transparent; border: none; outline: none; color: #d7dae0; font: inherit; }
+  .g { color: #7ee787; } .r { color: #ff7b72; } .y { color: #e3b341; } .b { color: #79c0ff; } .d { color: #8b949e; }
+  .foot { font: 12px/1.5 system-ui, sans-serif; color: #6e7681; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>API Security Gateway - Demonstration</h1>
+  <p class="sub">Every command below calls the live gateway: JWT auth, role check, Redis rate limiter, PII redaction.</p>
+  <div class="bar">
+    <button class="primary" id="run">Run full demonstration</button>
+    <button data-c="login bob userpass">login bob</button>
+    <button data-c="login alice adminpass">login alice</button>
+    <button data-c="send Mail john@example.com, card 4111-1111-1111-1111">send PII</button>
+    <button data-c="tamper">tamper token</button>
+    <button data-c="burst 12">burst 12</button>
+    <button id="clr">clear</button>
+  </div>
+  <div class="term">
+    <div id="out"></div>
+    <div class="row"><span class="prompt">gateway$</span><input id="in" placeholder="type help" autocomplete="off" autofocus></div>
+  </div>
+  <p class="foot">Demo users: bob / userpass (role user), alice / adminpass (role admin). The first request after idle can take up to a minute while the free-tier server wakes.</p>
+</div>
+<script>
+const out = document.getElementById('out'), inp = document.getElementById('in');
+let token = null, busy = false;
+
+function p(text, cls) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = text;
+  out.appendChild(d);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function api(path, opts) {
+  const slow = setTimeout(() => p('waking the server, this can take up to a minute...', 'd'), 3000);
+  try {
+    const res = await fetch(path, opts);
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    return { status: res.status, body };
+  } catch (e) {
+    return { status: 0, body: { detail: 'network error: ' + e.message } };
+  } finally { clearTimeout(slow); }
+}
+
+function post(path, data, tk) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (tk) headers['Authorization'] = 'Bearer ' + tk;
+  return api(path, { method: 'POST', headers, body: JSON.stringify(data) });
+}
+
+function show(r) {
+  const cls = r.status === 200 ? 'g' : (r.status === 429 || r.status === 401 ? 'r' : 'y');
+  p(r.status + ' ' + JSON.stringify(r.body), cls);
+}
+
+async function cmd(line) {
+  line = line.trim();
+  if (!line) return;
+  p('gateway$ ' + line, 'd');
+  const parts = line.split(/\s+/), c = parts[0], a = parts.slice(1);
+  if (c === 'help') {
+    p('login <user> <pass> | send <text> | notoken | tamper | burst <n> | clear\nusers: bob/userpass (user), alice/adminpass (admin)', 'd');
+  } else if (c === 'login') {
+    const r = await post('/login', { username: a[0] || '', password: a[1] || '' });
+    if (r.status === 200) { token = r.body.access_token; p('200 logged in', 'g'); p('  access_token: ' + token.slice(0, 40) + '...', 'b'); }
+    else show(r);
+  } else if (c === 'notoken') {
+    show(await post('/protected-resource', { text: 'hi' }));
+  } else if (c === 'tamper') {
+    if (!token) { p('log in first', 'y'); return; }
+    p('sending the token with its last 5 characters changed...', 'd');
+    show(await post('/protected-resource', { text: 'hi' }, token.slice(0, -5) + 'abcde'));
+  } else if (c === 'send') {
+    if (!token) { show(await post('/protected-resource', { text: a.join(' ') })); return; }
+    const r = await post('/protected-resource', { text: a.join(' ') }, token);
+    if (r.status === 200) { p('200 ' + r.body.message, 'g'); p('  sanitized_input: ' + r.body.sanitized_input, 'b'); }
+    else show(r);
+  } else if (c === 'burst') {
+    if (!token) { p('log in first', 'y'); return; }
+    const n = Math.min(parseInt(a[0], 10) || 12, 30);
+    p('firing ' + n + ' simultaneous requests...', 'd');
+    const rs = await Promise.all(Array.from({ length: n }, () => post('/protected-resource', { text: 'x' }, token)));
+    const codes = rs.map(r => r.status);
+    const ok = codes.filter(s => s === 200).length;
+    p(codes.join(' '), 'd');
+    p(ok + ' allowed, ' + (n - ok) + ' blocked (bucket of 5, refills 1 per second)', ok < n ? 'y' : 'g');
+  } else if (c === 'clear') {
+    out.innerHTML = '';
+  } else {
+    p('unknown command, type help', 'y');
+  }
+}
+
+inp.addEventListener('keydown', async e => {
+  if (e.key === 'Enter' && !busy) { busy = true; const v = inp.value; inp.value = ''; await cmd(v); busy = false; }
+});
+document.querySelectorAll('[data-c]').forEach(b => b.onclick = async () => { if (!busy) { busy = true; await cmd(b.dataset.c); busy = false; } });
+document.getElementById('clr').onclick = () => { out.innerHTML = ''; };
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+document.getElementById('run').onclick = async () => {
+  if (busy) return;
+  busy = true; out.innerHTML = ''; token = null;
+  const steps = [
+    ['# 1. wrong password is rejected'], 'login bob wrong',
+    ['# 2. no token, no entry'], 'notoken',
+    ['# 3. valid login returns a signed JWT'], 'login bob userpass',
+    ['# 4. a tampered token is rejected'], 'tamper',
+    ['# 5. PII is redacted before processing'], 'send Mail john@example.com, call 9876543210, card 4111-1111-1111-1111',
+    ['# 6. the rate limiter stops a burst'], 'burst 12'
+  ];
+  for (const s of steps) {
+    if (Array.isArray(s)) p(s[0], 'd'); else await cmd(s);
+    await sleep(500);
+  }
+  busy = false;
+};
+p('Type help, or click "Run full demonstration".', 'd');
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, Body, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from pathlib import Path
 from auth import create_token, verify_token, require_role, USERS
 from rate_limiter import is_allowed
 from pii import redact
@@ -52,6 +53,12 @@ def protected_resource(
         "message": f"Hello {client_id}, request processed.",
         "sanitized_input": clean_text,
     }
+
+
+@app.get("/demonstration", include_in_schema=False)
+def demonstration():
+    """Serve the terminal-style demo page (no auth; it calls the real endpoints)."""
+    return FileResponse(Path(__file__).parent / "demonstration.html")
 
 
 @app.get("/health")
