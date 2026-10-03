@@ -3,10 +3,15 @@ import redis
 import os
 from redis.exceptions import RedisError
 
+REDIS_URL = os.getenv("REDIS_URL")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, socket_connect_timeout=2)
+if REDIS_URL:
+    # Hosted Redis (e.g. Upstash): rediss:// URL carries host, password and TLS
+    r = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+else:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, socket_connect_timeout=2)
 
 BUCKET_CAPACITY = 5      # max tokens
 REFILL_RATE = 1           # tokens added per second
